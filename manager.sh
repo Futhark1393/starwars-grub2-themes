@@ -76,6 +76,8 @@ show_help() {
     echo -e "${WHITE}Usage:${NC}"
     echo -e "  ${GREEN}sudo ./manager.sh${NC}                  Interactive theme selector"
     echo -e "  ${GREEN}sudo ./manager.sh install <1-15>${NC}   Install theme by number"
+    echo -e "  ${GREEN}sudo ./manager.sh install random${NC}   Install a random theme"
+    echo -e "  ${GREEN}sudo ./manager.sh auto-random enable${NC} Enable theme randomization on boot"
     echo -e "  ${GREEN}sudo ./manager.sh uninstall${NC}        Remove current theme"
     echo -e "  ${GREEN}sudo ./manager.sh list${NC}             List all available themes"
     echo -e "  ${GREEN}./manager.sh --help${NC}                Show this help message"
@@ -84,6 +86,7 @@ show_help() {
     echo -e "  • ${CYAN}ImageMagick${NC} (convert/magick)  — for image processing"
     echo -e "  • ${CYAN}grub2-tools${NC}                   — for grub2-mkfont & grub2-mkconfig"
     echo -e "  • ${CYAN}DejaVu Sans${NC} font              — for menu text rendering"
+    echo -e "  • ${CYAN}chafa${NC} (optional)              — for terminal image previews"
     echo ""
     echo -e "${DIM}Dependencies are auto-installed if missing (Fedora/RHEL/CentOS).${NC}"
     echo ""
@@ -91,47 +94,134 @@ show_help() {
 
 # ── List Themes ─────────────────────────────────────────────────────────────
 
+# Global variables for pagination
+PAGE=1
+PER_PAGE=10
+FILTER=""
+
 list_themes() {
-    local COL1=4   # number width
-    local COL2=22  # name width
-    local COL3=42  # description width
+    local is_interactive="${1:-0}"
+    local COL1=4
+    local COL2=22
+    local COL3=42
 
     echo ""
-    # Header
     printf "  ${WHITE}%-${COL1}s   %-${COL2}s   %-${COL3}s${NC}\n" "#" "Theme Name" "Description"
     printf "  ${DIM}%-${COL1}s   %-${COL2}s   %-${COL3}s${NC}\n" "----" "----------------------" "------------------------------------------"
 
+    # Apply filter and get total count
+    local filtered_themes=()
     for theme in "${THEMES[@]}"; do
-        IFS='|' read -r num name desc bg <<< "${theme}"
-        printf "  ${YELLOW}%-${COL1}s${NC}   ${CYAN}%-${COL2}s${NC}   ${DIM}%-${COL3}s${NC}\n" "${num}" "${name}" "${desc}"
+        if [[ -z "${FILTER}" ]] || echo "${theme}" | grep -iq "${FILTER}"; then
+            filtered_themes+=("${theme}")
+        fi
     done
 
+    local total=${#filtered_themes[@]}
+    
+    if [[ "${is_interactive}" == "1" ]]; then
+        local total_pages=$(( (total + PER_PAGE - 1) / PER_PAGE ))
+        if [[ $PAGE -gt $total_pages && $total_pages -gt 0 ]]; then PAGE=$total_pages; fi
+        if [[ $PAGE -lt 1 ]]; then PAGE=1; fi
+        
+        local start=$(( (PAGE - 1) * PER_PAGE ))
+        local end=$(( start + PER_PAGE ))
+        
+        for (( i=start; i<end; i++ )); do
+            if [[ $i -ge $total ]]; then break; fi
+            IFS='|' read -r num name desc bg <<< "${filtered_themes[$i]}"
+            printf "  ${YELLOW}%-${COL1}s${NC}   ${CYAN}%-${COL2}s${NC}   ${DIM}%-${COL3}s${NC}\n" "${num}" "${name}" "${desc}"
+        done
+        
+        echo ""
+        if [[ -n "${FILTER}" ]]; then
+            echo -e "  ${DIM}Filter active: '${FILTER}' (${total} matches)${NC}"
+        fi
+        echo -e "  ${DIM}Page ${PAGE} of ${total_pages:-1}${NC}"
+    else
+        # Not interactive, just print all (like old list)
+        for theme in "${filtered_themes[@]}"; do
+            IFS='|' read -r num name desc bg <<< "${theme}"
+            printf "  ${YELLOW}%-${COL1}s${NC}   ${CYAN}%-${COL2}s${NC}   ${DIM}%-${COL3}s${NC}\n" "${num}" "${name}" "${desc}"
+        done
+    fi
     echo ""
 }
 
 # ── Interactive Menu ────────────────────────────────────────────────────────
 
 interactive_menu() {
-    print_banner
-    list_themes
-
-    echo -e "${WHITE}  Options:${NC}"
-    echo -e "    ${GREEN}1-15${NC}    Install a theme"
-    echo -e "    ${RED}u${NC}       Uninstall current theme"
-    echo -e "    ${DIM}q${NC}       Quit"
-    echo ""
-
     while true; do
-        echo -ne "  ${YELLOW}*${NC} ${WHITE}Enter your choice:${NC} "
-        read -r choice
+        clear
+        print_banner
+        list_themes 1
 
-        case "${choice}" in
+        echo -e "${WHITE}  Options:${NC}"
+        echo -e "    ${GREEN}1-15${NC}    Install a theme"
+        echo -e "    ${YELLOW}v <N>${NC}   Preview theme (e.g. 'v 7')"
+        echo -e "    ${CYAN}r${NC}       Install a random theme"
+        echo -e "    ${CYAN}f <str>${NC} Filter themes (e.g. 'f Vader', or 'f' to clear)"
+        echo -e "    ${BLUE}← / →${NC}   Previous / Next Page (or p/n)"
+        echo -e "    ${RED}u${NC}       Uninstall current theme"
+        echo -e "    ${DIM}q${NC}       Quit"
+        echo ""
+
+        echo -ne "  ${YELLOW}*${NC} ${WHITE}Enter your choice:${NC} "
+        
+        local choice=""
+        read -r -n 1 char
+        if [[ "$char" == $'\e' ]]; then
+            read -rs -n 2 -t 0.1 rest
+            choice="$char$rest"
+        else
+            IFS= read -r rest
+            choice="$char$rest"
+        fi
+
+        local cmd=""
+        local arg=""
+        
+        if [[ "$choice" == $'\e[C' ]]; then
+            cmd="NEXT_PAGE"
+        elif [[ "$choice" == $'\e[D' ]]; then
+            cmd="PREV_PAGE"
+        else
+            # parse first arg and rest
+            cmd="${choice%% *}"
+            arg="${choice#* }"
+            if [[ "$cmd" == "$arg" ]]; then arg=""; fi
+        fi
+
+        case "${cmd}" in
             [1-9]|1[0-5])
-                # Pad single digit with leading zero
-                local padded
-                padded=$(printf "%02d" "${choice}")
+                local padded=$(printf "%02d" "${cmd}")
                 install_by_number "${padded}"
                 break
+                ;;
+            v|V)
+                if [[ -z "${arg}" ]]; then
+                    echo -e "  ${RED}Please provide a theme number (e.g. 'v 7')${NC}"
+                    sleep 2
+                else
+                    local padded=$(printf "%02d" "${arg}")
+                    preview_theme "${padded}"
+                    echo -ne "  ${DIM}Press Enter to continue...${NC}"
+                    read -r
+                fi
+                ;;
+            r|R)
+                install_random
+                break
+                ;;
+            f|F)
+                FILTER="${arg}"
+                PAGE=1
+                ;;
+            NEXT_PAGE|n|N)
+                PAGE=$((PAGE + 1))
+                ;;
+            PREV_PAGE|p|P)
+                PAGE=$((PAGE - 1))
                 ;;
             u|U)
                 source "${SCRIPTS_DIR}/theme-engine.sh"
@@ -144,12 +234,9 @@ interactive_menu() {
                 echo ""
                 exit 0
                 ;;
-            --help|-h|help)
-                show_help
-                break
-                ;;
             *)
-                echo -e "  ${RED}Invalid choice.${NC} Enter a number (1-15), 'u' to uninstall, or 'q' to quit."
+                echo -e "  ${RED}Invalid choice.${NC}"
+                sleep 1
                 ;;
         esac
     done
@@ -188,6 +275,82 @@ install_by_number() {
     bash "${script}"
 }
 
+# ── Random & Services ───────────────────────────────────────────────────────
+
+install_random() {
+    local count=${#THEMES[@]}
+    local rand=$(( RANDOM % count ))
+    local theme="${THEMES[$rand]}"
+    IFS='|' read -r t_num t_name t_desc t_bg <<< "${theme}"
+    echo -e "${YELLOW}★ Selected Random Theme: ${t_name} (${t_num}) ★${NC}"
+    install_by_number "${t_num}"
+}
+
+setup_auto_random() {
+    local SERVICE_PATH="/etc/systemd/system/grub2-random-theme.service"
+    cat <<EOF > "${SERVICE_PATH}"
+[Unit]
+Description=Randomize GRUB2 Theme
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=${SCRIPT_DIR}/manager.sh install random
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable grub2-random-theme.service
+    echo -e "${GREEN}[OK]${NC} Auto-randomizer enabled! Theme will change on every boot."
+}
+
+remove_auto_random() {
+    local SERVICE_PATH="/etc/systemd/system/grub2-random-theme.service"
+    if [[ -f "${SERVICE_PATH}" ]]; then
+        systemctl disable grub2-random-theme.service
+        rm -f "${SERVICE_PATH}"
+        systemctl daemon-reload
+        echo -e "${GREEN}[OK]${NC} Auto-randomizer disabled."
+    else
+        echo -e "${YELLOW}[INFO]${NC} Auto-randomizer was not enabled."
+    fi
+}
+
+preview_theme() {
+    local num="${1}"
+    local bg_file=""
+    for theme in "${THEMES[@]}"; do
+        IFS='|' read -r t_num t_name t_desc t_bg <<< "${theme}"
+        if [[ "${t_num}" == "${num}" ]]; then
+            bg_file="${t_bg}"
+            break
+        fi
+    done
+    
+    if [[ -z "${bg_file}" || ! -f "${BACKGROUNDS_DIR}/${bg_file}" ]]; then
+        echo -e "${RED}[ERROR]${NC} Background image not found."
+        return
+    fi
+    
+    if ! command -v chafa &>/dev/null; then
+        echo -e "${YELLOW}[INFO]${NC} 'chafa' is not installed. Installing it for image previews..."
+        if command -v dnf &>/dev/null; then
+            dnf install -y chafa || echo "Failed to install chafa."
+        elif command -v apt-get &>/dev/null; then
+            apt-get update && apt-get install -y chafa || echo "Failed to install chafa."
+        fi
+    fi
+    
+    if command -v chafa &>/dev/null; then
+        echo ""
+        chafa "${BACKGROUNDS_DIR}/${bg_file}"
+        echo ""
+    else
+        echo -e "${RED}[ERROR]${NC} Preview is not available (chafa missing)."
+    fi
+}
+
 # ── Main ────────────────────────────────────────────────────────────────────
 
 main() {
@@ -214,20 +377,32 @@ main() {
     case "${1:-}" in
         install)
             if [[ -z "${2:-}" ]]; then
-                echo -e "${RED}[ERROR]${NC} Please specify a theme number (1-15)."
+                echo -e "${RED}[ERROR]${NC} Please specify a theme number (1-15) or 'random'."
                 echo -e "  ${DIM}Usage: sudo ./manager.sh install 7${NC}"
                 exit 1
             fi
 
-            local num="${2}"
-            if [[ "${num}" -lt 1 || "${num}" -gt 15 ]] 2>/dev/null; then
-                echo -e "${RED}[ERROR]${NC} Theme number must be between 1 and 15."
+            if [[ "${2}" == "random" ]]; then
+                install_random
+            else
+                local num="${2}"
+                if [[ "${num}" -lt 1 || "${num}" -gt 15 ]] 2>/dev/null; then
+                    echo -e "${RED}[ERROR]${NC} Theme number must be between 1 and 15."
+                    exit 1
+                fi
+                local padded=$(printf "%02d" "${num}")
+                install_by_number "${padded}"
+            fi
+            ;;
+        auto-random)
+            if [[ "${2:-}" == "enable" ]]; then
+                setup_auto_random
+            elif [[ "${2:-}" == "disable" ]]; then
+                remove_auto_random
+            else
+                echo -e "${RED}[ERROR]${NC} Usage: sudo ./manager.sh auto-random enable|disable"
                 exit 1
             fi
-
-            local padded
-            padded=$(printf "%02d" "${num}")
-            install_by_number "${padded}"
             ;;
         uninstall)
             source "${SCRIPTS_DIR}/theme-engine.sh"
