@@ -287,6 +287,18 @@ install_random() {
 }
 
 setup_auto_random() {
+    local OPT_DIR="/opt/starwars-grub"
+    
+    echo -e "  ${DIM}→ Copying files to ${OPT_DIR} for systemd service...${NC}"
+    mkdir -p "${OPT_DIR}"
+    cp -r "${SCRIPT_DIR}/manager.sh" "${SCRIPT_DIR}/scripts" "${SCRIPT_DIR}/backgrounds" "${OPT_DIR}/"
+    chmod +x "${OPT_DIR}/manager.sh"
+    
+    # Ensure correct SELinux context if possible
+    if command -v restorecon &>/dev/null; then
+        restorecon -R "${OPT_DIR}"
+    fi
+
     local SERVICE_PATH="/etc/systemd/system/grub2-random-theme.service"
     cat <<EOF > "${SERVICE_PATH}"
 [Unit]
@@ -295,7 +307,7 @@ After=multi-user.target
 
 [Service]
 Type=oneshot
-ExecStart=${SCRIPT_DIR}/manager.sh install random
+ExecStart=${OPT_DIR}/manager.sh install random
 
 [Install]
 WantedBy=multi-user.target
@@ -307,11 +319,18 @@ EOF
 
 remove_auto_random() {
     local SERVICE_PATH="/etc/systemd/system/grub2-random-theme.service"
+    local OPT_DIR="/opt/starwars-grub"
+    
     if [[ -f "${SERVICE_PATH}" ]]; then
         systemctl disable grub2-random-theme.service
         rm -f "${SERVICE_PATH}"
         systemctl daemon-reload
         echo -e "${GREEN}[OK]${NC} Auto-randomizer disabled."
+        
+        if [[ -d "${OPT_DIR}" ]]; then
+            rm -rf "${OPT_DIR}"
+            echo -e "  ${DIM}→ Removed ${OPT_DIR}${NC}"
+        fi
     else
         echo -e "${YELLOW}[INFO]${NC} Auto-randomizer was not enabled."
     fi
